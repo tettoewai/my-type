@@ -23,6 +23,10 @@ MAX_IMAGE_DIMENSION = 1024
 HEAD_CROP_SIZE = 512
 POSE_HEAD_LANDMARKS = [0, 7, 8, 2]
 
+BODY_SHAPES_FEMALE = ["Inverted Triangle", "Pear", "Hourglass", "Rectangle"]
+BODY_SHAPES_MALE = ["Triangle", "Rectangle", "Trapezoid", "V-Taper"]
+SKIN_UNDERTONES = ["Warm", "Cool", "Neutral"]
+
 
 def _head_crop(image: np.ndarray, pose_landmarks) -> np.ndarray | None:
     """Crop and upscale the head region using pose landmarks (nose, ears, chest)."""
@@ -75,7 +79,7 @@ def load_pose():
     )
 
 
-def process_image(image_bytes: bytes):
+def process_image(image_bytes: bytes, gender: str = "female"):
     """Run the full CV pipeline without distorting body geometry through resize.
 
     Body pose analysis is performed on the original full-resolution image because
@@ -102,13 +106,25 @@ def process_image(image_bytes: bytes):
             face_result = face_analyzer.analyze_face(head, face_mesh)
             skin_result = skin_analyzer.analyze_skin(head, face_mesh)
 
-    body_result = body_analyzer.analyze_body(body_image, pose, pose_results)
+    body_result = body_analyzer.analyze_body(body_image, pose, pose_results, gender=gender)
 
     return display_image, body_image, face_result, skin_result, body_result
 
 
 def not_detected(result: dict) -> str:
     return "Not detected" if result.get("error") else result.get("shape", "Unknown")
+
+
+def _build_options(detected: str, all_options: list[str]) -> tuple[list[str], int]:
+    """Build a selectbox option list that always contains ``detected``."""
+    options = list(all_options)
+    if detected not in options:
+        options = [detected] + options
+    try:
+        index = options.index(detected)
+    except ValueError:
+        index = 0
+    return options, index
 
 
 def display_shape_with_confidence(result: dict, min_confidence: int = 60) -> str:
@@ -128,6 +144,10 @@ st.markdown(f"<h1>{ICON('wand-magic-sparkles')} MyType</h1>", unsafe_allow_html=
 st.caption("Upload a full-body or portrait photo and get an AI-powered style analysis.")
 
 with st.sidebar:
+    st.markdown(f"<h3>{ICON('person')} Profile</h3>", unsafe_allow_html=True)
+    gender = st.radio("Gender", ["Female", "Male"], horizontal=True, key="gender")
+    st.divider()
+
     st.markdown(f"<h3>{ICON('upload')} Upload</h3>", unsafe_allow_html=True)
     uploaded_file = st.file_uploader("Choose a photo (JPG or PNG)", type=["jpg", "jpeg", "png"])
     process_clicked = st.button("Process Image", type="primary", width="stretch")
@@ -149,12 +169,14 @@ with st.sidebar:
         else:
             image_bytes = uploaded_file.getvalue()
             with st.spinner("Analyzing your photo with MediaPipe..."):
-                results = process_image(image_bytes)
+                results = process_image(image_bytes, gender=gender.lower())
             if results is None:
                 status_box.error("Could not decode the image. Try another file.")
             else:
                 st.session_state["results"] = results
                 st.session_state["original_image"] = results[1]
+                st.session_state["image_bytes"] = image_bytes
+                st.session_state["analysis_gender"] = gender.lower()
                 st.session_state["active_tab"] = 0
                 status_box.success("Analysis complete!")
                 st.rerun()
@@ -167,6 +189,23 @@ with st.sidebar:
             st.rerun()
 
 results = st.session_state.get("results")
+
+if results is not None:
+    current_gender = gender.lower()
+    if st.session_state.get("analysis_gender") != current_gender:
+        if "image_bytes" in st.session_state:
+            with st.spinner("Re-analyzing body shape for selected gender..."):
+                reanalyzed = process_image(st.session_state["image_bytes"], gender=current_gender)
+            if reanalyzed is not None:
+                results = reanalyzed
+                st.session_state["results"] = reanalyzed
+                st.session_state["original_image"] = reanalyzed[1]
+            for key in ("custom_face", "custom_skin", "custom_body"):
+                st.session_state.pop(key, None)
+            st.session_state["analysis_gender"] = current_gender
+            st.rerun()
+        else:
+            st.session_state["analysis_gender"] = current_gender
 
 active_tab = st.session_state.get("active_tab", 0)
 tab1, tab2, tab3 = st.tabs(["Dashboard", "Advanced Analytics", "Your Recommendations"])
@@ -184,6 +223,16 @@ with tab1:
         )
     else:
         image, original_image, face_result, skin_result, body_result = results
+
+        face_detected = "Not detected" if face_result.get("error") else face_result.get("shape", "Unknown")
+        skin_detected = "Not detected" if skin_result.get("error") else skin_result.get("undertone", "Unknown")
+        body_detected = "Not detected" if body_result.get("error") else body_result.get("shape", "Unknown")
+
+        face_options, face_idx = _build_options(face_detected, face_analyzer.FACE_SHAPES)
+        skin_options, skin_idx = _build_options(skin_detected, SKIN_UNDERTONES)
+        body_all = BODY_SHAPES_MALE if gender.lower() == "male" else BODY_SHAPES_FEMALE
+        body_options, body_idx = _build_options(body_detected, body_all)
+
         col_image, col_metrics = st.columns([1, 1], gap="large")
 
         with col_image:
@@ -208,9 +257,36 @@ with tab1:
 
         with col_metrics:
             st.markdown(f"<h3>{ICON('dna')} Style Profile</h3>", unsafe_allow_html=True)
-            st.metric("Face Shape", display_shape_with_confidence(face_result))
-            st.metric("Skin Tone", skin_result.get("undertone", "Not detected"))
-            st.metric("Body Shape", display_shape_with_confidence(body_result))
+            st.caption("Auto-detected from your photo, but you can adjust any value below.")
+
+            face_choice = st.selectbox("Face Shape", face_options, index=face_idx, key="custom_face")
+            skin_choice = st.selectbox("Skin Tone", skin_options, index=skin_idx, key="custom_skin")
+            body_choice = st.selectbox("Body Shape", body_options, index=body_idx, key="custom_body")
+
+            st.divider()
+
+            customized = (
+                face_choice != face_detected
+                or skin_choice != skin_detected
+                or body_choice != body_detected
+            )
+
+            st.metric("Face Shape", face_choice)
+            st.metric("Skin Tone", skin_choice)
+            st.metric("Body Shape", body_choice)
+
+            detected_hint = []
+            if not face_result.get("error"):
+                detected_hint.append(f"Face: {display_shape_with_confidence(face_result)}")
+            if not skin_result.get("error"):
+                detected_hint.append(f"Skin: {skin_result.get('undertone', 'Unknown')}")
+            if not body_result.get("error"):
+                detected_hint.append(f"Body: {display_shape_with_confidence(body_result)}")
+            if detected_hint:
+                if customized:
+                    st.caption(f"Detected: {' | '.join(detected_hint)} (overridden)")
+                else:
+                    st.caption(f"Detected: {' | '.join(detected_hint)}")
 
             if not face_result.get("error") and not body_result.get("error"):
                 face_conf = face_result.get("confidence", 0)
@@ -305,21 +381,27 @@ with tab3:
     else:
         image, original_image, face_result, skin_result, body_result = results
 
-        face_shape = not_detected(face_result)
-        skin_tone = skin_result.get("undertone", "Unknown")
-        body_shape = not_detected(body_result)
-        recs = recommender.get_recommendations(face_shape, skin_tone, body_shape)
+        face_shape = st.session_state.get("custom_face") or not_detected(face_result)
+        skin_tone = st.session_state.get("custom_skin") or skin_result.get("undertone", "Unknown")
+        body_shape = st.session_state.get("custom_body") or not_detected(body_result)
+        recs = recommender.get_recommendations(face_shape, skin_tone, body_shape, gender=gender.lower())
 
         st.markdown(f"<h3>{ICON('lightbulb')} Your Personalized Recommendations</h3>", unsafe_allow_html=True)
 
-        icon_map = {"Hairstyle": ICON("scissors"), "Makeup": ICON("palette"), "Outfit": ICON("shirt")}
+        is_male = gender.lower() == "male"
+        style_key = "Skincare" if is_male else "Makeup"
+        icon_map = {
+            "Hairstyle": ICON("scissors"),
+            style_key: ICON("spa") if is_male else ICON("palette"),
+            "Outfit": ICON("shirt"),
+        }
         col_h, col_m, col_o = st.columns(3)
 
-        for col, key in zip([col_h, col_m, col_o], ["Hairstyle", "Makeup", "Outfit"]):
+        for col, key in zip([col_h, col_m, col_o], ["Hairstyle", style_key, "Outfit"]):
             with col:
                 card = recs[key]
                 with st.container(border=True):
-                    st.markdown(f"### {icon_map[key]} {key}")
+                    st.markdown(f"### {icon_map[key]} {key}", unsafe_allow_html=True)
                     st.markdown(f"*Based on your: **{card['source']}***")
                     for item in card["rule"].split(","):
                         st.markdown(f"- {item.strip()}")
