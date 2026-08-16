@@ -9,7 +9,7 @@ A Streamlit web application that uses Computer Vision to analyze your photo and 
 - **Body Shape Detection** - Analyzes body proportions to classify body shape (Hourglass, Triangle, Inverted Triangle, Rectangle, Apple)
 - **Personalized Recommendations** - Rule-based engine provides tailored hairstyle, makeup, and outfit suggestions
 - **Interactive Visualizations** - Radar charts and bar graphs powered by Plotly
-- **Privacy-First** - All processing runs locally on your machine
+- **Privacy-First** - When run locally, all processing stays on your machine (cloud-hosted deployments process photos on their servers)
 
 ## Tech Stack
 
@@ -24,7 +24,7 @@ A Streamlit web application that uses Computer Vision to analyze your photo and 
 
 ## Prerequisites
 
-- Python 3.8 or higher
+- Python 3.10 or higher
 - Webcam or photo for analysis
 
 ## Installation
